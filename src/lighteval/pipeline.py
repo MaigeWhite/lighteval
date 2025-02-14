@@ -207,7 +207,7 @@ class Pipeline:
                 cache_dir=self.pipeline_parameters.env_config.cache_dir,
                 custom_tasks=self.pipeline_parameters.custom_tasks_directory,
             )
-            task_names_list, fewshots_dict = taskinfo_selector(tasks, registry)
+            task_names_list, fewshots_dict = taskinfo_selector(tasks, registry)  # fewshots_dict {"task": "aime_2024", "fewshot": 0, "trunate_fewshot": 0}
             task_dict = registry.get_task_dict(task_names_list)
             LightevalTask.load_datasets(list(task_dict.values()), self.pipeline_parameters.dataset_loading_processes)
 

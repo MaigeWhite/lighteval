@@ -713,14 +713,16 @@ class BLEURT:
 
     @property
     def tokenizer(self):
+        hf_dir = os.path.abspath(os.getenv("HF_HOME", ""))
         if self._tokenizer is None:
-            self._tokenizer = AutoTokenizer.from_pretrained("Elron/bleurt-tiny-512")
+            self._tokenizer = AutoTokenizer.from_pretrained(os.path.join(hf_dir, "Elron/bleurt-tiny-512"))
         return self._tokenizer
 
     @property
     def model(self):
+        hf_dir = os.path.abspath(os.getenv("HF_HOME", ""))
         if self._model is None:
-            self._model = AutoModelForSequenceClassification.from_pretrained("Elron/bleurt-tiny-512")
+            self._model = AutoModelForSequenceClassification.from_pretrained(os.path.join(hf_dir, "Elron/bleurt-tiny-512"))
             self._model.eval()
         return self._model
 

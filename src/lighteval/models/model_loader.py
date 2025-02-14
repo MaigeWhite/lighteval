@@ -36,6 +36,7 @@ from lighteval.models.transformers.adapter_model import AdapterModel, AdapterMod
 from lighteval.models.transformers.delta_model import DeltaModel, DeltaModelConfig
 from lighteval.models.transformers.transformers_model import TransformersModel, TransformersModelConfig
 from lighteval.models.vllm.vllm_model import VLLMModel, VLLMModelConfig
+from lighteval.models.rwkv.rwkv_model import RWKVModel, RWKVModelConfig
 from lighteval.utils.imports import (
     NO_LITELLM_ERROR_MSG,
     NO_TGI_ERROR_MSG,
@@ -62,6 +63,7 @@ def load_model(  # noqa: C901
         VLLMModelConfig,
         OpenAIModelConfig,
         LiteLLMModelConfig,
+        RWKVModelConfig,
     ],
     env_config: EnvConfig,
 ) -> Union[TransformersModel, AdapterModel, DeltaModel, ModelClient, DummyModel]:
@@ -101,6 +103,9 @@ def load_model(  # noqa: C901
 
     if isinstance(config, LiteLLMModelConfig):
         return load_litellm_model(config=config, env_config=env_config)
+
+    if isinstance(config, RWKVModelConfig):
+        return RWKVModel(config, env_config)
 
 
 def load_model_with_tgi(config: TGIModelConfig):

@@ -31,6 +31,7 @@ import lighteval.main_endpoint
 import lighteval.main_nanotron
 import lighteval.main_tasks
 import lighteval.main_vllm
+import lighteval.main_rwkv
 
 
 app = typer.Typer()
@@ -64,6 +65,7 @@ app.command(rich_help_panel="Evaluation Backends")(lighteval.main_accelerate.acc
 app.command(rich_help_panel="Evaluation Utils")(lighteval.main_baseline.baseline)
 app.command(rich_help_panel="Evaluation Backends")(lighteval.main_nanotron.nanotron)
 app.command(rich_help_panel="Evaluation Backends")(lighteval.main_vllm.vllm)
+app.command(rich_help_panel="Evaluation Backends")(lighteval.main_rwkv.rwkv)
 app.add_typer(
     lighteval.main_endpoint.app,
     name="endpoint",
