@@ -13,7 +13,6 @@ from pytorch_lightning.utilities import rank_zero_info
 from pytorch_lightning.strategies import DeepSpeedStrategy
 from tqdm import tqdm
 import time
-from rwkv_model import tqdm_decorator
 
 
 def __nop(ob):
