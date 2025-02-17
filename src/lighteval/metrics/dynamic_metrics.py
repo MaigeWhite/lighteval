@@ -247,6 +247,12 @@ def multilingual_extractive_match_metric(
         gold_extraction_regexes = get_extraction_regexes(formatted_doc, gold_extraction_target, language)
         pred_extraction_regexes = get_extraction_regexes(formatted_doc, pred_extraction_target, language)
 
+        # fallback_mode: first_match
+        # extraction_mode: any_match
+        # timeout_seconds: 5
+        # golds math_500 solution
+        # predictions: model generate
+        # formatted_doc: include query information
         extracted_predictions = [
             extract_target_from_pred(pred, pred_extraction_regexes, fallback_mode, extraction_mode, timeout_seconds)
             for pred in predictions
