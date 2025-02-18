@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass, fields
 from typing import Any, Type
 from typing import Optional
@@ -7,16 +8,13 @@ from lighteval.models.abstract_model import LightevalModel, ModelInfo
 from lighteval.data import GenerativeTaskDataset
 from lighteval.utils.utils import EnvConfig, as_list
 from lighteval.models.model_input import GenerationParameters
-from tqdm import tqdm
 import logging
 from lighteval.models.model_output import GenerativeResponse
 from lighteval.tasks.requests import GreedyUntilRequest
 import ray
 from more_itertools import distribute
-from .model import RWKV
-from .rwkv_tokenizer import TRIE_TOKENIZER
 import torch
-
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -51,47 +49,23 @@ def convert_types(data_obj: Any, cls: Type) -> None:
 @dataclass
 class RWKVModelConfig:
     model: str
-    load_model: str
     max_model_length: int = 32768
-    max_new_tokens: int = 16384
+    max_new_tokens: int = 2048
     seed: int = 2024
+    do_sample: bool = False
     temperature: float = 1.0
-    top_p: float = 0.0
+    top_p: float = 1.0
     top_k: int = 10
-    alpha_frequency: float = 0.5
-    alpha_presence: float = 0.5
-    alpha_decay: float = 0.996
     use_chat_template: bool = False
-    add_special_tokens: bool = False
+    add_special_tokens: Optional[list] = None
     ctx_len: int = 256
     num_gpus: int = 1
-    strategy: str = "cuda fp16"
-    n_layer: int = 24
-    n_embd: int = 2048
-    dim_att: int = 0
-    dim_ffn: int = 0
-    pre_ffn: int = 0
-    grad_cp: int = 0
-    head_size_a: int = 64
-    head_size_divisor: int = 8
-    vocab_size: int = 65536
-    dropout: int = 0
-    weight_decay: int = 0
-    weight_decay_final: int = -1
-    do_sample: bool = False
-    batch_size: int = 32
-    stop_token_idx: int = 261
-    device: str = "gpu"
-    pad_token_id: int = 0
+    batch_size: int = 8
     generation_parameters: GenerationParameters = None  # sampling parameters to use for generation
 
     def __post_init__(self):
         # 在对象初始化后调用 convert_types 进行类型转换
         convert_types(self, self.__class__)
-        if self.dim_att <= 0:
-            self.dim_att = self.n_embd
-        if self.dim_ffn <= 0:
-            self.dim_ffn = int((self.n_embd * 3.5) // 32 * 32)  # default = 3.5x emb size
 
 
 class RWKVModel(LightevalModel):
@@ -107,23 +81,12 @@ class RWKVModel(LightevalModel):
         self.model_info = ModelInfo(model_name=config.model, model_sha="")
 
     def init_model(self):
-        tokenizer = TRIE_TOKENIZER("rwkv_vocab_v20230424.txt")
+        tokenizer = AutoTokenizer.from_pretrained(self.rwkv_config.model, trust_remote_code=True)
         if self.rwkv_config.num_gpus > 1:
             return None, tokenizer
 
-        model = RWKV(self.rwkv_config).half()
-        if self.rwkv_config.load_model:
-            model.load_state_dict(torch.load(self.rwkv_config.load_model, map_location="cpu"),
-                                  strict=False)
-        model.cuda()
+        model = AutoModelForCausalLM.from_pretrained(self.rwkv_config.model, trust_remote_code=True).cuda()
         return model, tokenizer
-
-    # Tokenization utils
-    def tok_encode(self, str_to_encode: str | list[str], add_special_tokens: Optional[bool] = None):
-        if isinstance(str_to_encode, str):
-            return self.tokenizer.encode(str_to_encode)
-        else:
-            raise TypeError(f"only support str to encode but got{type(str_to_encode)}")
 
     def cleanup(self):
         pass
@@ -185,11 +148,13 @@ class RWKVModel(LightevalModel):
         ):
             # context = [c.context for c in dataset]
             # left truncate the inputs to the maximum length
-            samle_param = (self.rwkv_config.do_sample,
-                           self.rwkv_config.temperature,
-                           self.rwkv_config.top_p,
-                           self.rwkv_config.max_new_tokens)
-            outputs = self._generate(requests, *samle_param, stop_token_idx=self.rwkv_config.stop_token_idx)
+            samle_param = {"do_sample": self.rwkv_config.do_sample,
+                           "temperature": self.rwkv_config.temperature,
+                           "top_p": self.rwkv_config.top_p,
+                           "max_new_tokens": self.rwkv_config.max_new_tokens,
+                           "top_k": self.rwkv_config.top_k
+                           }
+            outputs = self._generate(requests, **samle_param)
             for result in outputs:
                 cur_response = GenerativeResponse(
                     result=result)
@@ -215,28 +180,34 @@ class RWKVModel(LightevalModel):
         return batch_request
 
     def _generate(self, requests,
-                  *args,
-                  stop_token_idx=261):
+                  **kwargs):
         if self.rwkv_config.num_gpus > 1:
             @ray.remote(num_gpus=1)
-            def run_inference_one_model(requests, *args, stop_token_idx=261):
-                model = RWKV(self.rwkv_config).half()
-                model.load_state_dict(torch.load(self.rwkv_config.load_model, map_location="cpu"), strict=False)
-                model.cuda()
+            def run_inference_one_model(requests, device, **kwargs):
+                model = AutoModelForCausalLM.from_pretrained(self.rwkv_config.model, trust_remote_code=True).cuda()
                 results = []
-                for batch_input_id in requests:
-                    generate_token, _, _ = model.generate(batch_input_id.cuda(), *args, stop_token_idx=stop_token_idx)
-                    for gen in generate_token:
-                        gen_text = self.tokenizer.decode(gen)
-                        results.append(gen_text)
+                with tqdm(total=len(batch_requests), postfix={'Throughput': 'N/A'}) as pbar:
+                    for batch_input_id in requests:
+                        start_time = time.time()
+                        input_length = [len(_) for _ in batch_input_id]
+                        generate_tokens = model.generate(batch_input_id.cuda(), **kwargs).cpu()
+                        for idx in range(len(generate_tokens)):
+                            out = generate_tokens[idx][input_length[idx]:]
+                            text = self.tokenizer.batch_decode(out, skip_special_tokens=True)
+                            results.append(text)
+                        bs = len(input_length)
+                        throughput = bs * self.rwkv_config.max_new_tokens / (end_time - start_time)
+                        pbar.set_postfix({'Throughput': f'{throughput:.2f} token/s'})
+                        pbar.update(1)
                 return results
 
             # dispatch requests to all self.data_parallel_size workers, in interleaved fashion
             # interleaved important to balance context lengths across workers
             requests = [list(x) for x in distribute(self.rwkv_config.num_gpus, requests)]
             inputs = [self.batch_request(req) for req in requests]
-            object_refs = [run_inference_one_model.remote(x, *args, stop_token_idx=self.rwkv_config.stop_token_idx) for
-                           x in inputs]
+            device_info = [f"cuda: {idx}" for idx in range(len(inputs))]
+            object_refs = [run_inference_one_model.remote(inputs[idx], device_info[idx], **kwargs) for idx in
+                           range(len(inputs))]
             results = ray.get(object_refs)
             # Invoke ray.shutdown() to prevent hang-ups if subsequent calls required.
             ray.shutdown()
@@ -249,8 +220,18 @@ class RWKVModel(LightevalModel):
         else:
             outputs = []
             batch_requests = self.batch_request(requests)
-            for req in tqdm(batch_requests):
-                generate_token, _, _ = self.model.generate(req.cuda(), *args, stop_token_idx=stop_token_idx)
-                for gen in generate_token:
-                    outputs.append(self.tokenizer.decode(gen))
+            with tqdm(total=len(batch_requests), postfix={'Throughput': 'N/A'}) as pbar:
+                for req in batch_requests:
+                    start_time = time.time()
+                    input_length = [len(_) for _ in req]
+                    generate_tokens = self.model.generate(req.cuda(), **kwargs).cpu()
+                    for idx in range(len(generate_tokens)):
+                        out = generate_tokens[idx][input_length[idx]:]
+                        text = self.tokenizer.decode(out, skip_special_tokens=True)
+                        outputs.append(text)
+                    end_time = time.time()
+                    bs = len(input_length)
+                    throughput = bs * self.rwkv_config.max_new_tokens / (end_time - start_time)
+                    pbar.set_postfix({'Throughput': f'{throughput:.2f} token/s'})
+                    pbar.update(1)
         return outputs
